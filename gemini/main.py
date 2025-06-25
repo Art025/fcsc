@@ -111,7 +111,7 @@ if __name__ == "__main__":
     # または、手元に画像がない場合は、簡単なテスト画像を生成してみましょう。
 
     # テスト画像を作成 (必要に応じてコメントアウトして実際の画像パスを設定)
-    test_image_path = "物体検出元画像.png"
+    test_image_path = "test_image.png"
     if not os.path.exists(test_image_path):
         dummy_img = Image.new("RGB", (600, 400), color="white")
         d = ImageDraw.Draw(dummy_img)
