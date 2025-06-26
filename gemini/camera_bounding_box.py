@@ -3,12 +3,12 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np  # numpyをインポート
 import cv2  # OpenCVライブラリをインポート
-import time  # 時間関連の処理のためにインポート
 import re
 
 # あなたのGemini APIキーを設定してください
 # 環境変数に設定することを推奨します: os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
 
 def analyze_image_with_3d_detection(pil_image: Image.Image):
     """
@@ -23,11 +23,12 @@ def analyze_image_with_3d_detection(pil_image: Image.Image):
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
         # === プロンプトの調整 ===
+        # 3Dバウンディングボックス全体が難しい場合でも、姿勢情報（yaw, pitch, roll）を強調
         prompt_parts = [
             "この画像から物体を検出し、その2Dバウンディングボックス情報と、**最も重要として、各物体の空間的な向き（姿勢、orientation）**を、yaw, pitch, roll の度数で具体的に記載してください。3Dバウンディングボックスの中心や寸法が推定できない場合でも、可能な限り姿勢情報（rotation: yaw, pitch, roll）を提供してください。例: Object: cup, 2D Box: [10, 20, 50, 60], Rotation(yaw=45deg, pitch=10deg, roll=0deg). 出力は簡潔に、各オブジェクトの情報が1行で完結するようにしてください。"
         ]
 
-        print("Analyzing camera frame...")
+        print("Analyzing single camera frame...")
         response = model.generate_content([pil_image] + prompt_parts)
 
         # --- 応答テキストの表示とパース ---
@@ -86,7 +87,6 @@ def analyze_image_with_3d_detection(pil_image: Image.Image):
                     parsed_objects.append(obj_info)
 
             # 重複エントリを防ぐため、検出されたオブジェクトを整理（同じラベルで複数の行がある場合など）
-            # もし同じラベルで複数のエントリが見つかった場合、新しい情報で上書きする
             unique_objects = {}
             for obj in parsed_objects:
                 label = obj.get("label", "Unknown")
@@ -116,9 +116,7 @@ def analyze_image_with_3d_detection(pil_image: Image.Image):
         draw = ImageDraw.Draw(pil_image)
         try:
             # フォントのパスを適切に設定（Linuxの場合など）
-            # Windows/macOS: "arial.ttf"
-            # Linux (多くのディストリビューション): "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" など
-            font = ImageFont.truetype("arial.ttf", 20)
+            font = ImageFont.truetype("arial.ttf", 20)  # Windows/macOS
         except IOError:
             print("Font 'arial.ttf' not found, using default font.")
             font = ImageFont.load_default()
@@ -173,92 +171,67 @@ if __name__ == "__main__":
         print("Error: Could not open camera.")
         exit()
 
-    print("Press 'q' to quit.")
+    print("Taking a single picture for analysis...")
 
-    last_analysis_time = time.time()
-    analysis_interval = 5  # 例: 5秒ごとにGeminiで分析
+    # カメラから1フレームだけ読み込む
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab frame from camera.")
+        cap.release()
+        cv2.destroyAllWindows()
+        exit()
 
-    cv2.namedWindow(
-        "Camera Feed with Detection", cv2.WINDOW_NORMAL
-    )  # ウィンドウをリサイズ可能にする
+    # OpenCVのBGR画像をPILのRGB画像に変換
+    pil_img_for_gemini = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-    # 最後に検出されたオブジェクト情報を保持する変数
-    # Geminiが検出できなかった場合でも、直前の検出結果を表示し続けるため
-    last_detections_cv_img = None
+    # Geminiで分析し、検出結果が描画されたPIL画像と検出情報を取得
+    processed_pil_img, detections = analyze_image_with_3d_detection(pil_img_for_gemini)
 
-    while True:
-        ret, frame = cap.read()  # フレームを読み込む
-        if not ret:
-            print("Failed to grab frame.")
-            break
+    # 処理されたPIL画像をNumpy配列（OpenCV形式）に変換
+    display_cv_img = cv2.cvtColor(np.array(processed_pil_img), cv2.COLOR_RGB2BGR)
 
-        current_time = time.time()
+    # === ここからが姿勢制御の概念的な部分（一度だけ実行） ===
+    if detections:
+        print("\n--- Detected Object Pose Information ---")
+        for obj in detections:
+            if "rotation" in obj:
+                label = obj.get("label", "Unknown")
+                yaw = obj["rotation"]["yaw"]
+                pitch = obj["rotation"]["pitch"]
+                roll = obj["rotation"]["roll"]
 
-        # 表示用のフレームを現在のフレームで初期化
-        display_frame = frame.copy()
+                print(
+                    f"[{label}] 姿勢情報: Yaw={yaw:.1f}°, Pitch={pitch:.1f}°, Roll={roll:.1f}°"
+                )
 
-        # --- Geminiによる分析の実行 ---
-        if current_time - last_analysis_time >= analysis_interval:
-            print("\n--- Sending frame to Gemini ---")
-            # OpenCVのBGR画像をPILのRGB画像に変換
-            pil_img_for_gemini = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                # ここに具体的な姿勢制御ロジックを記述します（一度だけ実行）
+                # 例: ロボットの関節角度を調整する、仮想環境のオブジェクトを回転させるなど
+                # 注意: これらの値はカメラからの相対的な見え方に基づくため、正確なロボット制御には追加のキャリブレーションや深度情報が必要になることが多いです。
 
-            # Geminiで分析し、検出結果が描画されたPIL画像と検出情報を取得
-            processed_pil_img, detections = analyze_image_with_3d_detection(
-                pil_img_for_gemini
-            )
-            last_analysis_time = current_time
+                if abs(yaw) > 30:
+                    print(
+                        f"  -> {label} のヨー角が大きい (Y:{yaw:.1f}°)。調整を検討してください。"
+                    )
+                if abs(pitch) > 20:
+                    print(
+                        f"  -> {label} のピッチ角が大きい (P:{pitch:.1f}°)。調整を検討してください。"
+                    )
+                # ロール角も同様にチェック可能
+            else:
+                print(
+                    f"[{obj.get('label', 'Unknown')}] 回転情報が見つかりませんでした。"
+                )
+    else:
+        print("オブジェクトが検出されませんでした。")
 
-            # 処理されたPIL画像をNumpy配列（OpenCV形式）に変換
-            last_detections_cv_img = cv2.cvtColor(
-                np.array(processed_pil_img), cv2.COLOR_RGB2BGR
-            )
+    # --- 姿勢制御の概念的な部分ここまで ---
 
-            # === ここからが姿勢制御の概念的な部分 ===
-            if detections:
-                for obj in detections:
-                    if "rotation" in obj:
-                        label = obj.get("label", "Unknown")
-                        yaw = obj["rotation"]["yaw"]
-                        pitch = obj["rotation"]["pitch"]
-                        roll = obj["rotation"]["roll"]
+    # 検出結果が描画された画像をOpenCVウィンドウに表示
+    cv2.imshow("Detection Result", display_cv_img)
+    print("\nPress any key on the 'Detection Result' window to close it.")
 
-                        print(
-                            f"[{label}] 検出された姿勢情報: Yaw={yaw:.1f}°, Pitch={pitch:.1f}°, Roll={roll:.1f}°"
-                        )
-
-                        # ここに具体的な姿勢制御ロジックを記述します
-                        # 例: ロボットの関節角度を調整する、仮想環境のオブジェクトを回転させるなど
-                        # 注意: これらの値はカメラからの相対的な見え方に基づくため、正確なロボット制御には追加のキャリブレーションや深度情報が必要になることが多いです。
-
-                        if abs(yaw) > 30:
-                            print(
-                                f"  -> {label} のヨー角が大きい (Y:{yaw:.1f}°)。調整を検討してください。"
-                            )
-                        if abs(pitch) > 20:
-                            print(
-                                f"  -> {label} のピッチ角が大きい (P:{pitch:.1f}°)。調整を検討してください。"
-                            )
-                        # ロール角も同様にチェック可能
-
-            # --- 姿勢制御の概念的な部分ここまで ---
-
-            display_frame = (
-                last_detections_cv_img  # 新しい検出結果があれば表示フレームを更新
-            )
-
-        elif last_detections_cv_img is not None:
-            # Geminiに送らないフレームの場合でも、前回の検出結果を表示し続ける
-            display_frame = (
-                last_detections_cv_img.copy()
-            )  # 直前の検出結果をコピーして表示
-
-        # 常に更新されたdisplay_frameを表示
-        cv2.imshow("Camera Feed with Detection", display_frame)
-
-        # 'q' キーが押されたら終了
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+    # キーが押されるまでウィンドウを表示し続ける
+    cv2.waitKey(0)
 
     # リソースを解放
     cap.release()
