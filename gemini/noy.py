@@ -1,3 +1,5 @@
+# onigiri.pngのバウンディングボックスを作成した結果をedtected_onigiri.jpgに保存する
+
 import os
 import cv2  # OpenCVをインポート
 from google import genai
