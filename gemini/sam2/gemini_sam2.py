@@ -63,17 +63,23 @@ def detect(frame, target_label):
     return False, None, None
 
 
-def draw_bounding_box(frame, box, label, color=(0, 255, 0)):
-    """バウンディングボックスを描画する関数"""
-    x1, y1, x2, y2 = box
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+# バウンディングボックスは描画しないので、この関数はシンプルにラベルを描画するためにのみ使用するか、
+# もしくは新しいヘルパー関数を定義する
+def draw_label_on_image(
+    frame, position, label, color=(255, 0, 0)
+):  # デフォルト色を赤に変更
+    """指定された位置にラベルテキストを描画する関数"""
+    cv2.putText(frame, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
 def main():
     input_image_path = "onigiri.png"
-    output_detected_image_path = "gemini_detected_onigiri.jpg"  # ファイル名を変更
-    output_sam_image_path = "sam_segmented_onigiri.jpg"  # ファイル名を変更
+    output_detected_image_path = (
+        "gemini_detected_onigiri.jpg"  # Geminiのバウンディングボックスあり
+    )
+    output_sam_image_path = (
+        "sam_segmented_with_gemini_label.jpg"  # SAMのセグメンテーション＋Geminiラベル
+    )
 
     img = cv2.imread(input_image_path)
     if img is None:
@@ -81,15 +87,37 @@ def main():
         return
 
     # Gemini APIでバウンディングボックスを検出
-    detected_flag, gemini_label, detected_bbox = detect(img, "rice_ball")
+    detected_flag, gemini_label, detected_bbox_gemini = detect(
+        img, "rice_ball"
+    )  # 変数名を変更
 
     if detected_flag:
         print(
-            f"「{gemini_label}」を検出しました。バウンディングボックス: {detected_bbox}"
+            f"「{gemini_label}」を検出しました。Geminiバウンディングボックス: {detected_bbox_gemini}"
         )
-        # Gemini検出結果の画像を保存
-        img_gemini_drawn = img.copy()  # 元のimgを変更しないようにコピー
-        draw_bounding_box(img_gemini_drawn, detected_bbox, gemini_label)
+        # Gemini検出結果の画像を保存 (赤いバウンディングボックスとラベルで)
+        img_gemini_drawn = img.copy()
+        # draw_bounding_boxは今回の要件では使わないが、元のコードとの比較のためにコメントアウト
+        # draw_bounding_box(img_gemini_drawn, detected_bbox_gemini, gemini_label, color=(255, 0, 0)) # 赤色
+        # ラベルとバウンディングボックスを描画する関数をここで直接呼び出す代わりに、
+        # draw_bounding_box_and_labelなどの新しい関数を作成することも可能。
+        # 今回は、SAMの結果にラベルのみ追加するため、この部分は元の通りで良い。
+
+        # Gemini単体での検出結果（赤色のバウンディングボックスとラベル）を保存
+        # draw_bounding_boxを再利用して、Geminiの検出結果を赤色で表示
+        x1, y1, x2, y2 = detected_bbox_gemini
+        cv2.rectangle(
+            img_gemini_drawn, (x1, y1), (x2, y2), (255, 0, 0), 2
+        )  # 赤色の四角
+        cv2.putText(
+            img_gemini_drawn,
+            gemini_label,
+            (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 0, 0),
+            2,
+        )
         cv2.imwrite(output_detected_image_path, img_gemini_drawn)
         print(f"Geminiによる検出結果を {output_detected_image_path} に保存しました。")
     else:
@@ -104,19 +132,38 @@ def main():
         return
 
     # 検出されたバウンディングボックスを使用してSAMで推論
-    if detected_bbox:
-        x1, y1, x2, y2 = detected_bbox
-        results = sam_model(input_image_path, bboxes=[x1, y1, x2, y2])
+    if detected_bbox_gemini:  # Geminiで検出されたバウンディングボックスをSAMに渡す
+        x1, y1, x2, y2 = detected_bbox_gemini
+
+        # SAMはinput_image_pathまたはimg (numpy array) のどちらでも受け取れる
+        # 既にimgを読み込んでいるので、ここではimgを直接渡します
+        # bboxesはSAMがセグメンテーションのプロンプトとして利用
+        results = sam_model(img, bboxes=[x1, y1, x2, y2])
 
         try:
-            # results.plot()はNumPy配列を返す
-            plot_img_sam = results[0].plot()  # SAMのデフォルトの描画
+            # results.plot()はSAMのデフォルトの描画（青いバウンディングボックスと0 0.XX）を含むNumPy配列を返す
+            plot_img_sam = results[0].plot()
 
-            # ここでGeminiが検出したラベルをSAMの描画結果に追加する
-            # SAMのplot_img_samはBGR形式のOpenCV画像なので、draw_bounding_boxが使える
-            draw_bounding_box(
-                plot_img_sam, detected_bbox, gemini_label, color=(0, 0, 255)
-            )  # 青色で描画
+            # SAMが描画したバウンディングボックスの座標を取得
+            # 通常、results[0].boxes.xyxy にバウンディングボックスの座標が含まれる
+            # SAMはプロンプトで与えられたバウンディングボックスに対してセグメンテーションを行うため、
+            # 描画されるバウンディングボックスは元のプロンプトと一致すると期待される
+
+            # ここでは、SAMが描画したバウンディングボックスのy座標の上部を利用して、
+            # その少し上にGeminiのラベルを描画します
+            # SAMのplot()で描画されたボックスの正確な位置を取得するのが最も確実ですが、
+            # Geminiから得たbboxをSAMに渡しているので、そのbboxのy1座標を利用します。
+
+            # Geminiのラベルを描画するY座標を調整 (SAMのボックスの上)
+            # SAMが描画したバウンディングボックスのy1座標を基準にする
+            label_y_position = y1 - 10  # バウンディングボックスの少し上に
+            if label_y_position < 0:  # 画像の上端からはみ出さないように調整
+                label_y_position = 15
+
+            # Geminiのラベルを描画 (バウンディングボックスは描画しない)
+            draw_label_on_image(
+                plot_img_sam, (x1, label_y_position), gemini_label, color=(255, 0, 0)
+            )  # 赤色でラベルを描画
 
             cv2.imwrite(output_sam_image_path, plot_img_sam)
             print(
@@ -124,6 +171,10 @@ def main():
             )
         except Exception as e:
             print(f"SAMの結果描画または保存中にエラーが発生しました: {e}")
+            # エラー時にSAMの描画ができなかった場合でも、Geminiラベルを描画する試みを続けるためのエラーハンドリング
+            # 例えば、SAMが結果を返さなかった場合、plot_img_sam がNoneになる可能性も考慮する
+            if plot_img_sam is None:
+                print("SAMのプロット画像が生成されませんでした。")
     else:
         print("SAMで処理するためのバウンディングボックスが見つかりませんでした。")
 
