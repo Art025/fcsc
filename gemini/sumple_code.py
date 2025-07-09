@@ -2,6 +2,7 @@ import os
 from google import genai
 from google.genai import types
 from PIL import Image
+import IPython
 
 # 環境変数からAPIキーを取得
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
